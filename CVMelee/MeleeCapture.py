@@ -23,12 +23,18 @@ CV_CAP_PROP_RECTIFICATION = 18
 class MeleeCapture:
 	def __init__(self, filename):
 		self.capture = cv2.VideoCapture(filename)
-		self.width = self.capture.get(CV_CAP_PROP_FRAME_WIDTH)
-		self.height = self.capture.get(CV_CAP_PROP_FRAME_HEIGHT)
-		self.totalFrames = self.capture.get(CV_CAP_PROP_FRAME_COUNT)
-		self.fps = self.capture.get(CV_CAP_PROP_FPS)
+		self.width = int(self.capture.get(CV_CAP_PROP_FRAME_WIDTH))
+		self.height = int(self.capture.get(CV_CAP_PROP_FRAME_HEIGHT))
+		self.totalFrames = int(self.capture.get(CV_CAP_PROP_FRAME_COUNT))
+		self.fps = int(self.capture.get(CV_CAP_PROP_FPS))
 
 	def readFrame(self, frameIndex):
 		self.capture.set(CV_CAP_PROP_POS_FRAMES, frameIndex)
-		frame = self.cap.read()[1]
+		frame = self.capture.read()[1]
 		return frame
+
+	def readFrameWithBorder(self, frameIndex, borderWidth):
+		return cv2.copyMakeBorder(self.readFrame(frameIndex),
+			                      borderWidth, borderWidth,
+			                      borderWidth, borderWidth,
+			                      cv2.BORDER_CONSTANT, 0)
