@@ -35,6 +35,6 @@ class MeleeCapture:
 
 	def readFrameWithBorder(self, frameIndex, borderWidth):
 		return cv2.copyMakeBorder(self.readFrame(frameIndex),
-			                      borderWidth, borderWidth,
-			                      borderWidth, borderWidth,
-			                      cv2.BORDER_CONSTANT, 0)
+		                          borderWidth, borderWidth,
+		                          borderWidth, borderWidth,
+		                          cv2.BORDER_CONSTANT, 0)
