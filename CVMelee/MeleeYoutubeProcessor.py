@@ -84,9 +84,9 @@ class MeleeYoutubeProcessor:
 
 		potentialROIs = [
 			self.PotentialROI(xlines[i][0],  xlines[j][0],
-				              ylines[k][0],  ylines[l][0],
-				              xlines[i][1] & xlines[j][1] &
-				              ylines[k][1] & ylines[l][1]) for i in range(len(xlines))
+			                  ylines[k][0],  ylines[l][0],
+			                  xlines[i][1] & xlines[j][1] &
+			                  ylines[k][1] & ylines[l][1]) for i in range(len(xlines))
 			                                               for j in range(i+1, len(xlines))
 			                                               for k in range(len(ylines))
 			                                               for l in range(k+1, len(ylines))]
