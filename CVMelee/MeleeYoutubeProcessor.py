@@ -65,19 +65,17 @@ class MeleeYoutubeProcessor:
 		return (abs(resolution - 1.333) < 0.05 or abs(resolution - 1.62) < 0.05) and ((xhigh - xlow) * (yhigh - ylow) * 2 > self.capture.width * self.capture.height)
 
 	def findMeleesROI(self):
-		xs = {}
-		ys = {}
-		images = [self.capture.readFrame(i) for i in range(40)]
-		im = self.capture.readFrame(0 * self.capture.totalFrames / 40) / 40
-		for i in range(1,40):
-			imt = self.capture.readFrame(i * self.capture.totalFrames / 40)
+		pprint("1")
+		images = [self.capture.readFrame(i) for i in range(0, self.capture.totalFrames, self.capture.totalFrames / 40)]
+		pprint("2")
+		im = images[0]/40
+		for imt in images[1:]:
 			im = cv2.add(im, imt/40)
 
-		pprint("AYYY")
 		gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
 		edges = cv2.Canny(gray, 100, 100, apertureSize = 3)
-		minLineLength = 300
-		maxLineGap = 100
+		minLineLength = 100
+		maxLineGap = 10
 		lines = cv2.HoughLinesP(edges,1,np.pi/180,100,minLineLength,maxLineGap)
 		if lines == None:
 			lines = [[]]
@@ -85,42 +83,13 @@ class MeleeYoutubeProcessor:
 		pprint(xlines)
 		ylines = [0] + list(set([l[1] for l in lines[0] if l[1] == l[3]])) + [self.capture.height]
 		pprint(ylines)
-		pprint("LMAO")
+
+		plt.imshow(im)
+		plt.show()
+
 		plt.imshow(edges)
 		plt.show()
-		plt.imshow(images[23])
-		plt.show()
-		"""
-		for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
-			pprint(frameIndex)
-			image = self.capture.readFrame(frameIndex)
-			gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-			edges = cv2.Canny(gray, 100, 200, apertureSize = 3)
-			minLineLength = 300
-			maxLineGap = 100
-			lines = cv2.HoughLinesP(edges,1,np.pi/180,100,minLineLength,maxLineGap)
-			if lines == None:
-				lines = [[]]
-			xlines = [0] + list(set([l[0] for l in lines[0] if l[0] == l[2]])) + [self.capture.width]
-			pprint(xlines)
-			for x in xlines:
-				if not (x in xs):
-					xs[x] = set([])
-				xs[x].add(frameIndex)
 
-			ylines = [0] + list(set([l[1] for l in lines[0] if l[1] == l[3]])) + [self.capture.height]
-			pprint(ylines)
-			for y in ylines:
-				if not (y in ys):
-					ys[y] = set([])
-				ys[y].add(frameIndex)
-
-		xlines = sorted(xs.items(), key=lambda x: x[0])
-		xlines = [x for x in xlines if len(x[1]) > 1]
-
-		ylines = sorted(ys.items(), key=lambda y: y[0])
-		ylines = [y for y in ylines if len(y[1]) > 1]
-		"""
 
 		xpairs = [[xlow, xhigh] for xlow in xlines for xhigh in xlines if (
 			10 * (xhigh - xlow) > 6 * self.capture.width)]
@@ -158,6 +127,7 @@ class MeleeYoutubeProcessor:
 		pprint(yhighs)
 		pprint(xlows)
 		pprint(xhighs)
+		pprint("3")
 
 		for borderThickness in range(0,24,3):
 			#ylows.append(borderThickness)
