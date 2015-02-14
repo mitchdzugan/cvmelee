@@ -1,2 +1,3 @@
 media/videos
 *.pyc
+*.DS_Store

@@ -12,7 +12,7 @@ import random
 #-----------#
 
 from CVMelee.MeleeCapture import MeleeCapture
-from CVMelee.PotentialROI import potentialROIFactory
+from CVMelee.PotentialROI import potentialROIFactoryFactory
 from CVMelee.TemplateWithTransparency import numberTemplate
 
 #-----------#
@@ -55,99 +55,258 @@ class MeleeYoutubeProcessor:
 		if (not os.path.exists(filePath + "." + video.extension)):
 			video.download()
 		self.capture = MeleeCapture(filePath + "." + video.extension)
-		self.PotentialROI = potentialROIFactory(self.capture.width + 6, self.capture.height + 6)
+		self.potentialROIFactory = potentialROIFactoryFactory(self.capture.width, self.capture.height)
 
 	def incrementAsIf60fps(self, framesToIncIf60fps):
 		self.frameIndex += framesToIncIf60fps * self.capture.fps / 60
 
+	def inResolutionRange(self, xlow, xhigh, ylow, yhigh):
+		resolution = (float(xhigh - xlow)) / (yhigh - ylow)
+		return (abs(resolution - 1.333) < 0.05 or abs(resolution - 1.62) < 0.05) and ((xhigh - xlow) * (yhigh - ylow) * 2 > self.capture.width * self.capture.height)
+
 	def findMeleesROI(self):
 		xs = {}
 		ys = {}
+		images = [self.capture.readFrame(i) for i in range(40)]
+		im = self.capture.readFrame(0 * self.capture.totalFrames / 40) / 40
+		for i in range(1,40):
+			imt = self.capture.readFrame(i * self.capture.totalFrames / 40)
+			im = cv2.add(im, imt/40)
 
-		width = self.capture.width + 6
-		height = self.capture.height + 6
+		pprint("AYYY")
+		gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+		edges = cv2.Canny(gray, 100, 100, apertureSize = 3)
+		minLineLength = 300
+		maxLineGap = 100
+		lines = cv2.HoughLinesP(edges,1,np.pi/180,100,minLineLength,maxLineGap)
+		if lines == None:
+			lines = [[]]
+		xlines = [0] + list(set([l[0] for l in lines[0] if l[0] == l[2]])) + [self.capture.width]
+		pprint(xlines)
+		ylines = [0] + list(set([l[1] for l in lines[0] if l[1] == l[3]])) + [self.capture.height]
+		pprint(ylines)
+		pprint("LMAO")
+		plt.imshow(edges)
+		plt.show()
+		plt.imshow(images[23])
+		plt.show()
+		"""
 		for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
 			pprint(frameIndex)
-
-			image = self.capture.readFrameWithBorder(frameIndex, 3)
+			image = self.capture.readFrame(frameIndex)
 			gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-			edges = cv2.Canny(gray, 100, 300, apertureSize = 3)
-			minLineLength = 100
+			edges = cv2.Canny(gray, 100, 200, apertureSize = 3)
+			minLineLength = 300
 			maxLineGap = 100
 			lines = cv2.HoughLinesP(edges,1,np.pi/180,100,minLineLength,maxLineGap)
 			if lines == None:
 				lines = [[]]
-			xlines = [0] + list(set([l[0] for l in lines[0] if l[0] == l[2]])) + [width]
-			ylines = [0] + [height]
+			xlines = [0] + list(set([l[0] for l in lines[0] if l[0] == l[2]])) + [self.capture.width]
+			pprint(xlines)
 			for x in xlines:
 				if not (x in xs):
 					xs[x] = set([])
 				xs[x].add(frameIndex)
+
+			ylines = [0] + list(set([l[1] for l in lines[0] if l[1] == l[3]])) + [self.capture.height]
+			pprint(ylines)
 			for y in ylines:
 				if not (y in ys):
 					ys[y] = set([])
 				ys[y].add(frameIndex)
 
 		xlines = sorted(xs.items(), key=lambda x: x[0])
+		xlines = [x for x in xlines if len(x[1]) > 1]
+
 		ylines = sorted(ys.items(), key=lambda y: y[0])
+		ylines = [y for y in ylines if len(y[1]) > 1]
+		"""
 
-		potentialROIs = [
-			self.PotentialROI(xlines[i][0],  xlines[j][0],
-			                  ylines[k][0],  ylines[l][0],
-			                  xlines[i][1] & xlines[j][1] &
-			                  ylines[k][1] & ylines[l][1]) for i in range(len(xlines))
-			                                               for j in range(i+1, len(xlines))
-			                                               for k in range(len(ylines))
-			                                               for l in range(k+1, len(ylines))]
+		xpairs = [[xlow, xhigh] for xlow in xlines for xhigh in xlines if (
+			10 * (xhigh - xlow) > 6 * self.capture.width)]
 
-		potentialROIs = [p for p in potentialROIs if 2 * (p.xhigh-p.xlow) * (p.yhigh-p.ylow) > self.capture.height * self.capture.width]
-		potentialROIs = [p for p in potentialROIs if len(p.frameSet) > 0]
-		potentialROIs = sorted(potentialROIs, key=lambda p: len(p.frameSet))
-		pprint(len(potentialROIs))
+		ypairs = [[ylow, yhigh] for ylow in ylines for yhigh in ylines if (
+			10 * (yhigh - ylow) > 8 * self.capture.height)]
 
-		eliminatedBulk = False
+		ylowsAll  = sorted(list(set([y[0] for y in ypairs])), key=lambda y: -1*y)
+		yhighsAll = sorted(list(set([y[1] for y in ypairs])), key=lambda y: 1*y)
+		xlows  = sorted(list(set([x[0] for x in xpairs])), key=lambda x: -1*x)
+		xhighs = sorted(list(set([x[1] for x in xpairs])), key=lambda x: 1*x)
+
+		pprint(ylowsAll)
+		pprint(yhighsAll)
+		ylows = [ylowsAll.pop()]
+		ylowCurr = ylows[0]
+		while len(ylowsAll) > 0:
+			y = ylowsAll.pop()
+			if y - 3 > ylowCurr:
+				ylows.append(y)
+				ylowCurr = y
+
+		yhighs = [yhighsAll.pop()]
+		yhighCurr = yhighs[0]
+		while len(yhighsAll) > 0:
+			y = yhighsAll.pop()
+			if y + 3 < yhighCurr:
+				yhighs.append(y)
+				yhighCurr = y
+		
 		potentialSubROIs = set([])
+		potentialROIsChecked = set([])
+
+		pprint(ylows)
+		pprint(yhighs)
+		pprint(xlows)
+		pprint(xhighs)
+
+		for borderThickness in range(0,24,3):
+			#ylows.append(borderThickness)
+			#yhighs = [y+3 for y in yhighs]
+			#yhighs.append(self.capture.height + 2 * borderThickness)
+
+			ylows = [0] + [y + borderThickness for y in ylows]
+			yhighs = [y + borderThickness for y in yhighs] + [self.capture.height + 2 * borderThickness]
+
+			self.PotentialROI = self.potentialROIFactory(borderThickness)
+			allPotentialROIs = set([
+			    self.PotentialROI(xlow, xhigh, 
+			                      ylow, yhigh) for xlow in xlows
+			                                   for xhigh in xhighs
+			                                   for ylow in ylows
+			                                   for yhigh in yhighs
+			                                   if self.inResolutionRange(xlow, xhigh, ylow, yhigh)])
+
+			potentialROIs = allPotentialROIs - potentialROIsChecked
+			pprint([len(potentialROIs),len(allPotentialROIs),len(potentialROIsChecked)])
+
+			maxFound = 0
+			someFound = 0
+			for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
+				for ROI in potentialROIs:
+					if frameIndex > 4 * self.capture.totalFrames / 40:
+						ROI.subROIs = [subROI for subROI in ROI.subROIs if subROI.mmatchesFound > 0]
+					if frameIndex > 9 * self.capture.totalFrames / 40:
+						ROI.subROIs = [subROI for subROI in ROI.subROIs if subROI.mmatchesFound > 1]
+						ROI.subROIs = [subROI for subROI in ROI.subROIs if subROI.matchesFound > 0]
+				checkedROIs = set([ROI for ROI in potentialROIs if len(ROI.subROIs) == 0])
+				potentialROIsChecked = potentialROIsChecked | checkedROIs
+				potentialROIs = allPotentialROIs - potentialROIsChecked
+				pprint(frameIndex)
+				image = None
+				for ROI in potentialROIs:
+					if image == None:
+						image = self.capture.readFrameWithBorder(frameIndex, borderThickness)
+					foundPossibleMatch = False
+					scopedIm = ROI.scopeImage(image)
+					matches = self.matchesFromFrame(scopedIm, range(4))
+
+
+					"""
+					pprint(matches)
+					drawScopedIm = scopedIm.copy()
+					cv2.rectangle(drawScopedIm, (236,769), (302,817), (255,255,255))
+					plt.imshow(drawScopedIm)
+					plt.show()
+					"""
+
+
+					for match in matches:
+						for m in match:
+							if m["Match"] > 0.7:
+								foundPossibleMatch = True
+								break
+					if foundPossibleMatch:
+						pprint([ROI.xlow, ROI.xhigh, ROI.ylow, ROI.yhigh])
+						for subROI in ROI.subROIs:
+							scopedIm = cv2.resize(image[subROI.ylow:subROI.yhigh, subROI.xlow:subROI.xhigh], (1176,884))
+							matches = self.matchesFromFrame(scopedIm, range(4))
+							if any([m["Match"] > 0.8 for match in matches for m in match]):
+								subROI.mmatchesFound += 1
+								someFound = max(someFound, subROI.mmatchesFound)
+							for match in matches:
+								if match[0]["Match"] > 0.8 and match[1]["Match"] > 0.8:
+									subROI.matchesFound += 1
+									maxFound = max(maxFound, subROI.matchesFound)
+									potentialSubROIs.add(subROI)
+				#pprint(maxFound)
+				#pprint(someFound)
+				if maxFound > 3:
+					break
+			potentialROIsChecked = potentialROIsChecked | potentialROIs
+			if maxFound > 3:
+				break
+
+		if not maxFound > 3:
+			pprint("I DONT BELIEVE THIS IS A MELEE VIDEO")
+			return
+
+		foundCount = [0,0,0]
 		for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
 			pprint(frameIndex)
-			pprint(eliminatedBulk)
-			image = self.capture.readFrameWithBorder(frameIndex, 3)
 			longestMatches = [0,0,0,0]
-			for ROI in potentialROIs:
-				ROI.foundMatch = False
-				ROI.foundPossibleMatch = False
-				scopedIm = cv2.resize(image[ROI.ylow:ROI.yhigh, ROI.xlow:ROI.xhigh], (1176,884))
-				matches = self.matchesFromFrame(scopedIm, range(4))
-				for match in matches:
-					for m in match:
-						if m["Match"] > 0.7:
-							ROI.foundPossibleMatch = True
-							break
-				if ROI.foundPossibleMatch or eliminatedBulk:
-					for subROI in ROI.subROIs:
-						scopedIm = cv2.resize(image[subROI.ylow:subROI.yhigh, subROI.xlow:subROI.xhigh], (1176,884))
-						subROI.matches = self.matchesFromFrame(scopedIm, range(4))
-						for i, match in enumerate(subROI.matches):
-							for j, digitMatch in enumerate(match):
-								if digitMatch["Match"] > 0.8:
-									ROI.foundMatch = True
-								else:
-									longestMatches[i] = max(j, longestMatches[i])
-									break
-			pprint(longestMatches)
-			if any([length > 0 for length in longestMatches]):
-				for ROI in potentialROIs:
-					if ROI.foundMatch:
-						ROI.matchesFound += 1
-					if eliminatedBulk:
-						for subROI in ROI.subROIs:
-							for i, length in enumerate(longestMatches):
-								for j in range(length):
-									subROI.matchSum += subROI.matches[i][j]["Match"]
-			if any([ROI.matchesFound > 1 for ROI in potentialROIs]):
-				eliminatedBulk = True
-				potentialROIs = [ROI for ROI in potentialROIs if ROI.matchesFound > 0]
-		pprint(potentialROIs)
+			for subROI in potentialSubROIs:
+				scopedIm = cv2.resize(
+				    self.capture.readFrameWithBorder(
+				    	frameIndex, subROI.borderThickness)[subROI.ylow:subROI.yhigh, subROI.xlow:subROI.xhigh], (1176,884))
+				subROI.matches = self.matchesFromFrame(scopedIm, range(4))
+				for i, match in enumerate(subROI.matches):
+					for j, matchDigit in enumerate(match):
+						if matchDigit["Match"] > 0.8:
+							longestMatches[i] = max(j+1, longestMatches[i])
 
+			for subROI in potentialSubROIs:
+				for i, length in enumerate(longestMatches):
+					for j in range(length):
+						subROI.matchSum[j] += subROI.matches[i][j]["Match"]
+			for length in longestMatches:
+				for j in range(length):
+					foundCount[j] += 1
+
+			digitPlacesFound = 0
+			totalCount = 0
+			for count in foundCount:
+				totalCount += count
+				if count > 0:
+					digitPlacesFound += 1
+			if digitPlacesFound > 0:
+				maxval = max(
+				    potentialSubROIs, key=lambda subROI: subROI.matchSumAvg(foundCount)
+				    ).matchSumAvg(foundCount) / digitPlacesFound
+
+			if totalCount > 60:
+				potentialSubROIs = [
+				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.99 * maxval]
+			elif totalCount > 50:
+				potentialSubROIs = [
+				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.95 * maxval]
+			elif totalCount > 49:
+				potentialSubROIs = [
+				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.90 * maxval]
+			elif totalCount > 44:
+				potentialSubROIs = [
+				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.75 * maxval]
+
+			if all([count > 1000 for count in foundCount]):
+				break
+
+			if digitPlacesFound > 2:
+				pprint(foundCount)
+				pprint([[subROI.matchSum[0] / foundCount[0], subROI.matchSum[1] / foundCount[1], subROI.matchSum[2] / foundCount[2]] for subROI in potentialSubROIs])
+
+		subROI = max(potentialSubROIs, key=lambda subROI: subROI.matchSumAvg(foundCount))
+		pprint(subROI.xlow)
+		pprint(subROI.xhigh)
+		pprint(subROI.ylow)
+		pprint(subROI.yhigh)
+		
+		"""
+		for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
+			image = self.capture.readFrameWithBorder(frameIndex, subROI.borderThickness)
+			scopedIm = subROI.scopeImage(image)
+			plt.imshow(scopedIm)
+			plt.show()
+		"""
+		
 
 	def matchFromImage(self, xLow, xHigh, yLow, yHigh, frame, template):
 		window = frame[yLow:yHigh, xLow:xHigh]
