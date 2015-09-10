@@ -12,3 +12,11 @@ class TemplateWithTransparency:
 def numberTemplate(filePath):
 	name = filePath.split("/")[-1].split(".")[0]
 	return TemplateWithTransparency(filePath, name)
+
+def buttonsTemplate(filePath):
+	name = "buttons"
+	return TemplateWithTransparency(filePath, name)
+
+def playerIconTemplate(filePath):
+	name = filePath.split("/")[-1].split(".")[0].split("p")[1]
+	return TemplateWithTransparency(filePath, name)

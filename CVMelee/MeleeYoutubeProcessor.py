@@ -8,14 +8,33 @@ from IPython import embed
 from matplotlib import pyplot as plt
 import operator
 import random
+from sets import Set
+import json
 
 #-----------#
 
 from CVMelee.MeleeCapture import MeleeCapture
 from CVMelee.PotentialROI import potentialROIFactoryFactory
-from CVMelee.TemplateWithTransparency import numberTemplate
+from CVMelee.TemplateWithTransparency import numberTemplate, buttonsTemplate, playerIconTemplate
+from CVMelee.PlayerState import PlayerState
+from CVMelee.EndOfVODException import EndOfVODException
 
 #-----------#
+
+class Dummy:
+	def __init__(self):
+		self.fps = 0
+
+class RawGame:
+	def __init__(self,timeStamp, playerStates):
+		self.timeStamp = timeStamp
+		self.playerStates = playerStates
+
+	def toJson(self, youtubeVodId):
+		return json.dumps({"raw_game": {
+			"youtube_vod_id": youtubeVodId,
+			"timestamp": self.timeStamp
+			}})
 
 class MeleeYoutubeProcessor:
 	def __init__(self, youtubeId):
@@ -27,256 +46,306 @@ class MeleeYoutubeProcessor:
 				"./media/numbers/" + filename
 				) for filename in os.listdir("./media/numbers/") if filename.endswith(".png")]
 		self.percentLocations = {
-            "y" : 768,
-            "xs" : [235, 514, 793, 1071]
-        }
+		    "y" : 407,
+		    "xs" : [128, 280, 432, 584]
+		}
+		self.playerIconX = 428
+		self.playerIconY = 46
+		self.buttonsX = 461
+		self.buttonsY = 397
+		self.playerIcons = [
+			playerIconTemplate(
+				"./media/pause/playerIcons/" + filename
+				) for filename in os.listdir("./media/pause/playerIcons/") if filename.endswith(".png")]
+		self.buttons = buttonsTemplate("./media/pause/buttons.png")
 
 	def run(self):
-		self.downloadVideo()
-		self.findMeleesROI()
+		self.rawgames = []
+		if not self.downloadVideo():
+			return False
+		if not self.findMeleesROI():
+			pprint("Not a Melee VOD")
+			return False
 		self.frameIndex = 0
-		while(not self.endOfVideo()):
-			self.processGame()
+		while(self.processGame()):
+			pprint([ps.percentList for ps in self.playerStates])
+		return True
 
 	def processGame(self):
-		self.determinePorts()
-		self.rollbackToGameStart()
-		self.getPlayByPlay()
-		self.determineWinner()
+		try:
+			frameStart = self.frameIndex
+			self.determinePorts()
+			self.rollbackToGameStart(frameStart)
+			frameStart = self.frameIndex
+			self.getPlayByPlay()
+			self.determineWinner()
+			self.rawgames.append(RawGame(frameStart, self.playerStates))
+			return True
+		except EndOfVODException:
+			return False
+
+
+	def determinePorts(self):
+		matchesFound = [0,0,0,0]
+		while(1):
+			image = self.ROI.scopeImage(self.capture.readFrame(self.frameIndex))
+			matches = self.matchesFromFrame(image, range(4))
+			self.ports = []
+			for i in range(len(matches)):
+				if matches[i][0]["Match"] > 0.8:
+					matchesFound[i] += 1
+					if matchesFound[i] > 1:
+						self.ports.append(i)
+			if len(self.ports) == 2:
+				break
+			self.incrementAsIf60fps(15)
+		pprint(self.ports)
+
+	def rollbackToGameStart(self, frameStart):
+		self.frameIndex = frameStart
+		while any([m[0]["Match"]<0.8 for m in self.matchesFromFrame(self.ROI.scopeImage(self.capture.readFrame(self.frameIndex)), self.ports)]):
+			self.incrementAsIf60fps(5)
+
+	def getPlayByPlay(self):
+		playerStates = [PlayerState(self.frameIndex, self.ports[0] + 1),
+		                PlayerState(self.frameIndex, self.ports[1] + 1)]
+		while(1):
+			image = self.ROI.scopeImage(self.capture.readFrame(self.frameIndex))
+			playerStates[0].currentMatch, playerStates[1].currentMatch = self.matchesFromFrame(image, self.ports)
+			for state in playerStates:
+				percent = state.matchToPercent(state.currentMatch, 0.75)
+				state.processPercent(percent, self.frameIndex)
+			pprint([self.frameIndex, [playerStates[0].framesOfConsecNones, playerStates[0].stocks, playerStates[0].percent], 
+			               [playerStates[1].framesOfConsecNones, playerStates[1].stocks, playerStates[1].percent]])
+			self.incrementAsIf60fps(5)
+			if all([state.framesOfConsecNones > 60 for state in playerStates]):
+				break
+		self.playerStates = playerStates
+
+	def determineWinner(self):
+		winner = None
+		state0, state1 = self.playerStates
+		if state0.stocks == 1 and state1.stocks > 1:
+			pprint("By only 1 player had 1 stock")
+			winner = state1.port
+		elif state1.stocks == 1 and state0.stocks > 1:
+			pprint("By only 1 player had 1 stock")
+			winner = state0.port
+		elif (abs(state0.framesOfConsecNones - state1.framesOfConsecNones) <= 20):
+			winner = -1
+			numFrames = min(state0.framesOfConsecNones, state1.framesOfConsecNones)
+			foundPause = False
+			for i in range(self.frameIndex-numFrames, self.frameIndex):
+				image = self.ROI.scopeImage(self.capture.readFrame(i))
+				if self.matchFromImage(self.buttonsX, self.buttonsX + 134,
+				                       self.buttonsY, self.buttonsY + 36,
+				                       image, self.buttons)  > 0.90:
+					foundPause = True
+					maxval = 0.0
+					pausedPort = 1
+					for i, j in [[i,j] for i in range(-5,5) for j in range(-5,5)]:
+						for playerIcon in self.playerIcons:
+							m = self.matchFromImage(self.playerIconX - i,
+							                        self.playerIconX + 22 - i,
+							                        self.playerIconY - j,
+							                        self.playerIconY + 20 - j,
+							                        image, playerIcon)
+							if m > maxval:
+								maxval = m
+								pausedPort = int(playerIcon.name)
+						if maxval > 0.9:
+							break
+					pprint(i)
+					pprint(self.ROI.xlow)
+					pprint(self.ROI.xhigh)
+					pprint(self.ROI.ylow)
+					pprint(self.ROI.yhigh)
+					pprint(self.ROI.borderTop)
+					pprint(self.ROI.borderBottom)
+					pprint("By Pause")
+					pprint(pausedPort)
+					if pausedPort == state0.port:
+						winner = state1.port
+					else:
+						winner = state0.port
+					break
+			if not foundPause:
+				winner = min(self.playerStates, key=lambda s: s.percentList[-1][2]).port
+				pprint("By Last hit")
+		else:
+			if state0.framesOfConsecNones > state1.framesOfConsecNones + 20 and state0.stocks == 1:
+				pprint("By saw last stock lost")
+				winner = state1.port
+			elif state1.stocks == 1:
+				pprint("By saw last stock lost")
+				winner = state0.port
+
+		state0.winner = winner == state0.port
+		state1.winner = winner == state1.port
+		pprint("WINNER'S PORT IS: " + `winner`)
 
 	def endOfVideo(self):
-		return self.frameIndex < self.capture.totalFrames
+		return self.frameIndex >= self.capture.totalFrames
 
 	def downloadVideo(self):
-		self.youtube.url = self.youtubeUrl
-		video = self.youtube.videos[-2]
-		filePath = os.path.join("./media/videos/", video.filename)
-		video.filename = filePath
-		if (not os.path.exists(filePath + "." + video.extension)):
-			video.download()
-		self.capture = MeleeCapture(filePath + "." + video.extension)
-		self.potentialROIFactory = potentialROIFactoryFactory(self.capture.width, self.capture.height)
+		try:
+			self.youtube.url = self.youtubeUrl
+			video = self.youtube.filter('mp4')[-1]
+			filePath = os.path.join("./cache/videos/", video.filename)
+			video.filename = filePath
+			pprint(video.filename)
+			if (not os.path.exists(filePath + "." + video.extension)):
+				video.download()
+			return False
+			self.capture = MeleeCapture(filePath + "." + video.extension)
+			if self.capture.valid: 
+				self.potentialROIFactory = potentialROIFactoryFactory(self.capture.width, self.capture.height)
+				return False
+			return False
+		except:
+			pprint("AYY")
+			self.capture = Dummy()
+			return False
 
 	def incrementAsIf60fps(self, framesToIncIf60fps):
 		self.frameIndex += framesToIncIf60fps * self.capture.fps / 60
 
 	def inResolutionRange(self, xlow, xhigh, ylow, yhigh):
 		resolution = (float(xhigh - xlow)) / (yhigh - ylow)
-		return (abs(resolution - 1.333) < 0.05 or abs(resolution - 1.62) < 0.05) and ((xhigh - xlow) * (yhigh - ylow) * 2 > self.capture.width * self.capture.height)
+		return ((abs(resolution - 1.333) < 0.05 or abs(resolution - 1.62) < 0.05) and 
+		       ((xhigh - xlow) * (yhigh - ylow) * 2 > self.capture.width * self.capture.height))
 
-	def findMeleesROI(self):
-		pprint("1")
-		images = [self.capture.readFrame(i) for i in range(0, self.capture.totalFrames, self.capture.totalFrames / 40)]
-		pprint("2")
-		im = images[0]/40
-		for imt in images[1:]:
-			im = cv2.add(im, imt/40)
+	def removeNeighbors(self, l):
+		currExtreme = l.pop()
+		newl = [currExtreme]
+		while len(l) > 0:
+			curr = l.pop()
+			if abs(curr - currExtreme) > 3:
+				currExtreme = curr
+				newl.append(currExtreme)
+		return newl
 
-		gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-		edges = cv2.Canny(gray, 100, 100, apertureSize = 3)
-		minLineLength = 100
-		maxLineGap = 10
+	def ROIsFromVideo(self, meleeImages):
+		average = meleeImages[0].image/len(meleeImages)
+		for meleeImage in meleeImages[1:]:
+			average = cv2.add(average, meleeImage.image/len(meleeImages))
+		gray = cv2.cvtColor(average, cv2.COLOR_BGR2GRAY)
+		edges = cv2.Canny(gray, 100, 300, apertureSize = 3)
+		minLineLength = 0
+		maxLineGap = 0
 		lines = cv2.HoughLinesP(edges,1,np.pi/180,100,minLineLength,maxLineGap)
 		if lines == None:
 			lines = [[]]
-		xlines = [0] + list(set([l[0] for l in lines[0] if l[0] == l[2]])) + [self.capture.width]
-		pprint(xlines)
-		ylines = [0] + list(set([l[1] for l in lines[0] if l[1] == l[3]])) + [self.capture.height]
-		pprint(ylines)
+		pprint(lines)
+		xlines = list(set([0] + [l[0] for l in lines[0] if l[0] == l[2] and abs(l[1] - l[3]) > self.capture.width/10] + [self.capture.width]))
+		ylines = list(set([0] + [l[1] for l in lines[0] if l[1] == l[3] and abs(l[2] - l[0]) > self.capture.height/10] + [self.capture.height]))
 
-		plt.imshow(im)
-		plt.show()
+		xlows = sorted(
+			filter(lambda x: x < self.capture.width / 2, xlines), key=lambda x: -1*x)
+		xhighs = sorted(
+			filter(lambda x: not (x < self.capture.width / 2), xlines))
+		ylows = self.removeNeighbors(sorted(
+			filter(lambda y: y < self.capture.height / 2, ylines), key=lambda y: -1*y))
+		yhighs = self.removeNeighbors(sorted(
+			filter(lambda y: not (y < self.capture.height / 2), ylines)))
 
-		plt.imshow(edges)
-		plt.show()
-
-
-		xpairs = [[xlow, xhigh] for xlow in xlines for xhigh in xlines if (
-			10 * (xhigh - xlow) > 6 * self.capture.width)]
-
-		ypairs = [[ylow, yhigh] for ylow in ylines for yhigh in ylines if (
-			10 * (yhigh - ylow) > 8 * self.capture.height)]
-
-		ylowsAll  = sorted(list(set([y[0] for y in ypairs])), key=lambda y: -1*y)
-		yhighsAll = sorted(list(set([y[1] for y in ypairs])), key=lambda y: 1*y)
-		xlows  = sorted(list(set([x[0] for x in xpairs])), key=lambda x: -1*x)
-		xhighs = sorted(list(set([x[1] for x in xpairs])), key=lambda x: 1*x)
-
-		pprint(ylowsAll)
-		pprint(yhighsAll)
-		ylows = [ylowsAll.pop()]
-		ylowCurr = ylows[0]
-		while len(ylowsAll) > 0:
-			y = ylowsAll.pop()
-			if y - 3 > ylowCurr:
-				ylows.append(y)
-				ylowCurr = y
-
-		yhighs = [yhighsAll.pop()]
-		yhighCurr = yhighs[0]
-		while len(yhighsAll) > 0:
-			y = yhighsAll.pop()
-			if y + 3 < yhighCurr:
-				yhighs.append(y)
-				yhighCurr = y
-		
-		potentialSubROIs = set([])
-		potentialROIsChecked = set([])
-
-		pprint(ylows)
-		pprint(yhighs)
+		pprint([[l[1], l[2] - l[0]] for l in lines[0] if l[1] == l[3]])
 		pprint(xlows)
 		pprint(xhighs)
-		pprint("3")
+		pprint(ylows)
+		pprint(yhighs)
 
+		possibleROILists = []
 		for borderThickness in range(0,24,3):
-			#ylows.append(borderThickness)
-			#yhighs = [y+3 for y in yhighs]
-			#yhighs.append(self.capture.height + 2 * borderThickness)
-
+			ROIFactory = self.potentialROIFactory(borderThickness)
 			ylows = [0] + [y + borderThickness for y in ylows]
 			yhighs = [y + borderThickness for y in yhighs] + [self.capture.height + 2 * borderThickness]
+			possibleROILists.append(set([
+			    ROIFactory(xlow, xhigh, 
+			               ylow, yhigh) for xlow in xlows
+			                            for xhigh in xhighs
+			                            for ylow in ylows
+			                            for yhigh in yhighs
+			                            if self.inResolutionRange(xlow, xhigh, 
+			                                                      ylow, yhigh)]))
+			pprint(len(possibleROILists[-1]))
+		return possibleROILists
 
-			self.PotentialROI = self.potentialROIFactory(borderThickness)
-			allPotentialROIs = set([
-			    self.PotentialROI(xlow, xhigh, 
-			                      ylow, yhigh) for xlow in xlows
-			                                   for xhigh in xhighs
-			                                   for ylow in ylows
-			                                   for yhigh in yhighs
-			                                   if self.inResolutionRange(xlow, xhigh, ylow, yhigh)])
+	def ROIsForTournament(self):
+		return Set()
 
-			potentialROIs = allPotentialROIs - potentialROIsChecked
-			pprint([len(potentialROIs),len(allPotentialROIs),len(potentialROIsChecked)])
-
-			maxFound = 0
-			someFound = 0
-			for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
-				for ROI in potentialROIs:
-					if frameIndex > 4 * self.capture.totalFrames / 40:
-						ROI.subROIs = [subROI for subROI in ROI.subROIs if subROI.mmatchesFound > 0]
-					if frameIndex > 9 * self.capture.totalFrames / 40:
-						ROI.subROIs = [subROI for subROI in ROI.subROIs if subROI.mmatchesFound > 1]
-						ROI.subROIs = [subROI for subROI in ROI.subROIs if subROI.matchesFound > 0]
-				checkedROIs = set([ROI for ROI in potentialROIs if len(ROI.subROIs) == 0])
-				potentialROIsChecked = potentialROIsChecked | checkedROIs
-				potentialROIs = allPotentialROIs - potentialROIsChecked
-				pprint(frameIndex)
-				image = None
-				for ROI in potentialROIs:
-					if image == None:
-						image = self.capture.readFrameWithBorder(frameIndex, borderThickness)
-					foundPossibleMatch = False
-					scopedIm = ROI.scopeImage(image)
-					matches = self.matchesFromFrame(scopedIm, range(4))
-
-
-					"""
-					pprint(matches)
-					drawScopedIm = scopedIm.copy()
-					cv2.rectangle(drawScopedIm, (236,769), (302,817), (255,255,255))
-					plt.imshow(drawScopedIm)
-					plt.show()
-					"""
-
-
-					for match in matches:
-						for m in match:
-							if m["Match"] > 0.7:
-								foundPossibleMatch = True
-								break
-					if foundPossibleMatch:
-						pprint([ROI.xlow, ROI.xhigh, ROI.ylow, ROI.yhigh])
+	def findMeleesROI(self):
+		meleeImages = [self.capture.readFrame(i) for i in range(0, self.capture.totalFrames, self.capture.totalFrames / 40)]
+		possibleROILists = self.ROIsFromVideo(meleeImages)
+		possibleROIsChecked = set([])
+		for possibleROIList in possibleROILists:
+			possibleROIListToCheck = possibleROIList - possibleROIsChecked
+			numComparedPerDigit = [0,0,0]
+			for imagesChecked, meleeImage in enumerate(meleeImages):
+				pprint(imagesChecked)
+				numFoundPerPort = [[0,0,0],[0,0,0],[0,0,0],[0,0,0]]
+				for ROI in possibleROIListToCheck:
+					scopedIm = ROI.scopeImage(meleeImage)
+					ROI.matches = self.matchesFromFrame(scopedIm, range(4))
+					if any([m["Match"] > 0.7 for match in ROI.matches for m in match]):
 						for subROI in ROI.subROIs:
-							scopedIm = cv2.resize(image[subROI.ylow:subROI.yhigh, subROI.xlow:subROI.xhigh], (1176,884))
-							matches = self.matchesFromFrame(scopedIm, range(4))
-							if any([m["Match"] > 0.8 for match in matches for m in match]):
-								subROI.mmatchesFound += 1
-								someFound = max(someFound, subROI.mmatchesFound)
-							for match in matches:
-								if match[0]["Match"] > 0.8 and match[1]["Match"] > 0.8:
-									subROI.matchesFound += 1
-									maxFound = max(maxFound, subROI.matchesFound)
-									potentialSubROIs.add(subROI)
-				#pprint(maxFound)
-				#pprint(someFound)
-				if maxFound > 3:
-					break
-			potentialROIsChecked = potentialROIsChecked | potentialROIs
-			if maxFound > 3:
-				break
+							scopedIm = subROI.scopeImage(meleeImage)
+							subROI.matches = self.matchesFromFrame(scopedIm, range(4))
+							for i, matchDigit in enumerate(subROI.matches):
+								for j, match in enumerate(matchDigit):
+									if match["Match"] > 0.8:
+										numFoundPerPort[i][j] += 1
+				isNumPerPort = [
+					[numFound > 5 or (numFound * 10 > 
+						              len(possibleROIListToCheck)) for numFound in numFoundPerDigit]
+					for numFoundPerDigit in numFoundPerPort]
+				for i, isNumPerDigit in enumerate(isNumPerPort):
+					for j, isNum in enumerate(isNumPerDigit):
+						if isNum:
+							numComparedPerDigit[j] += 1
 
-		if not maxFound > 3:
-			pprint("I DONT BELIEVE THIS IS A MELEE VIDEO")
-			return
-
-		foundCount = [0,0,0]
-		for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
-			pprint(frameIndex)
-			longestMatches = [0,0,0,0]
-			for subROI in potentialSubROIs:
-				scopedIm = cv2.resize(
-				    self.capture.readFrameWithBorder(
-				    	frameIndex, subROI.borderThickness)[subROI.ylow:subROI.yhigh, subROI.xlow:subROI.xhigh], (1176,884))
-				subROI.matches = self.matchesFromFrame(scopedIm, range(4))
-				for i, match in enumerate(subROI.matches):
-					for j, matchDigit in enumerate(match):
-						if matchDigit["Match"] > 0.8:
-							longestMatches[i] = max(j+1, longestMatches[i])
-
-			for subROI in potentialSubROIs:
-				for i, length in enumerate(longestMatches):
-					for j in range(length):
-						subROI.matchSum[j] += subROI.matches[i][j]["Match"]
-			for length in longestMatches:
-				for j in range(length):
-					foundCount[j] += 1
-
-			digitPlacesFound = 0
-			totalCount = 0
-			for count in foundCount:
-				totalCount += count
-				if count > 0:
-					digitPlacesFound += 1
-			if digitPlacesFound > 0:
-				maxval = max(
-				    potentialSubROIs, key=lambda subROI: subROI.matchSumAvg(foundCount)
-				    ).matchSumAvg(foundCount) / digitPlacesFound
-
-			if totalCount > 60:
-				potentialSubROIs = [
-				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.99 * maxval]
-			elif totalCount > 50:
-				potentialSubROIs = [
-				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.95 * maxval]
-			elif totalCount > 49:
-				potentialSubROIs = [
-				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.90 * maxval]
-			elif totalCount > 44:
-				potentialSubROIs = [
-				    subROI for subROI in potentialSubROIs if subROI.matchSumAvg(foundCount) / digitPlacesFound > 0.75 * maxval]
-
-			if all([count > 1000 for count in foundCount]):
-				break
-
-			if digitPlacesFound > 2:
-				pprint(foundCount)
-				pprint([[subROI.matchSum[0] / foundCount[0], subROI.matchSum[1] / foundCount[1], subROI.matchSum[2] / foundCount[2]] for subROI in potentialSubROIs])
-
-		subROI = max(potentialSubROIs, key=lambda subROI: subROI.matchSumAvg(foundCount))
-		pprint(subROI.xlow)
-		pprint(subROI.xhigh)
-		pprint(subROI.ylow)
-		pprint(subROI.yhigh)
-		
-		"""
-		for frameIndex in range(0, self.capture.totalFrames, self.capture.totalFrames / 40):
-			image = self.capture.readFrameWithBorder(frameIndex, subROI.borderThickness)
-			scopedIm = subROI.scopeImage(image)
-			plt.imshow(scopedIm)
-			plt.show()
-		"""
-		
+							checkedROIs = set([
+								ROI for ROI in possibleROIListToCheck if all(
+									[m["Match"] <= 0.7 for match in ROI.matches for m in match])])
+							possibleROIListToCheck = possibleROIListToCheck - checkedROIs
+							possibleROIsChecked = possibleROIsChecked | checkedROIs
+							for ROI in possibleROIListToCheck:
+								for subROI in ROI.subROIs:
+									subROI.matchSum[j] += subROI.matches[i][j]["Match"]
+						else:
+							break
+				totalCount = sum(numComparedPerDigit)
+				digitsCompared = [numCompared > 0 for numCompared in numComparedPerDigit].count(True)
+				if imagesChecked > 4 and totalCount < 1: break
+				if imagesChecked > 9 and totalCount < 8: break
+				if imagesChecked > 14 and totalCount < 15: break
+				if imagesChecked > 24 and totalCount < 22: break
+				if imagesChecked > 29 and totalCount < 29: break
+				if imagesChecked > 34 and totalCount < 36: break
+				maxVal, maxROI = 0.0, None
+				for ROI in possibleROIListToCheck:
+					for subROI in ROI.subROIs:
+						#pprint(subROI.matchSum)
+						curVal = subROI.matchSumAvg(numComparedPerDigit)
+						if curVal > maxVal:
+							maxVal = curVal
+							maxROI = subROI
+				for ROI in possibleROIListToCheck:
+					condition = lambda ignore: True
+					if digitsCompared > 0: condition = lambda matchSumAvg: matchSumAvg > maxVal * 0.85
+					if digitsCompared > 1: condition = lambda matchSumAvg: matchSumAvg > maxVal * 0.95
+					if digitsCompared > 2: condition = lambda matchSumAvg: matchSumAvg > maxVal * 0.99
+					ROI.subROIs = [subROI for subROI in ROI.subROIs if condition(subROI.matchSumAvg(numComparedPerDigit))]
+				checkedROIs = set([ROI for ROI in possibleROIListToCheck if len(ROI.subROIs) == 0])
+				possibleROIListToCheck = possibleROIListToCheck - checkedROIs
+				possibleROIsChecked = possibleROIsChecked | checkedROIs
+			if totalCount < 43:
+				possibleROIsChecked = possibleROIsChecked | possibleROIListToCheck 
+			else:
+				pprint(maxVal)
+				self.ROI = maxROI
+				return True
+		return False
 
 	def matchFromImage(self, xLow, xHigh, yLow, yHigh, frame, template):
 		window = frame[yLow:yHigh, xLow:xHigh]
@@ -291,16 +360,16 @@ class MeleeYoutubeProcessor:
 	def matchesFromFrame(self, frame, cornerIndexes):
 		matches = []
 		percents = []
-		yLow = self.percentLocations["y"] - 19
-		yHigh = self.percentLocations["y"] - 19 + 69
+		yLow = self.percentLocations["y"]
+		yHigh = self.percentLocations["y"] + 39
 		for cornerX in [self.percentLocations["xs"][ind] for ind in cornerIndexes]:
 			accdWidth = 0
 			matchesPerPort = []
 			for i in range(3):
 				results = []
 				for number in self.numbers:
-					if (i == 0 and number.image.shape[1] != 66):
-						xHigh = cornerX - 10 - accdWidth
+					if (i == 0 and number.image.shape[1] != 37):
+						xHigh = cornerX - 5 - accdWidth
 					else:
 						xHigh = cornerX - accdWidth
 					xLow = xHigh - number.image.shape[1]
@@ -313,12 +382,20 @@ class MeleeYoutubeProcessor:
 					"Match" : bestMatch["Match"],
 					"Digit" : int(bestMatch["Name"])
 				})
-				if (i == 0 and bestMatch["Width"] != 66):
-					accdWidth += bestMatch["Width"] + 7
+				if (i == 0 and bestMatch["Width"] != 37):
+					accdWidth += bestMatch["Width"] + 1
 				else:
 					accdWidth += bestMatch["Width"] - 3
 			matches.append(matchesPerPort)
 		return matches
+
+	def toJson(self, roiId, processedVersion):
+		return json.dumps({"youtube_vod": {
+			"urlid": self.youtubeId,
+			"roi_id": roiId,
+			"fps": self.capture.fps,
+			"processedversion": processedVersion
+			}})
 
 
 

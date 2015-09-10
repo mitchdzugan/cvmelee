@@ -1,4 +1,6 @@
 import cv2
+from MeleeImage import MeleeImage
+from CVMelee.EndOfVODException import EndOfVODException
 
 CV_CAP_PROP_POS_MSEC = 0
 CV_CAP_PROP_POS_FRAMES = 1
@@ -27,15 +29,11 @@ class MeleeCapture:
 		self.height = int(self.capture.get(CV_CAP_PROP_FRAME_HEIGHT))
 		self.totalFrames = int(self.capture.get(CV_CAP_PROP_FRAME_COUNT))
 		self.fps = int(self.capture.get(CV_CAP_PROP_FPS))
+		self.valid = self.totalFrames > 0
 
-	def readFrame(self, frameIndex):
+	def readFrame(self, frameIndex, borderTop=0, borderBottom=0):
 		self.capture.set(CV_CAP_PROP_POS_FRAMES, frameIndex)
 		frame = self.capture.read()[1]
-		return frame
-
-	def readFrameWithBorder(self, frameIndex, borderTop, borderBottom = -1):
-		if borderBottom == -1:
-			borderBottom = borderTop
-		return cv2.copyMakeBorder(self.readFrame(frameIndex),
-		                          borderTop, borderBottom,
-		                          0, 0, cv2.BORDER_CONSTANT, 0)
+		if frame == None:
+			raise EndOfVODException(frameIndex)
+		return MeleeImage(frame, borderTop, borderBottom)
